@@ -473,6 +473,27 @@ def test_supported_answer_keeps_citation_display() -> None:
     ) == sources
 
 
+def test_chat_composer_styles_match_app_width_and_theme(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rendered: list[str] = []
+    monkeypatch.setattr(
+        app.st,
+        "markdown",
+        lambda body, **_kwargs: rendered.append(body),
+    )
+
+    app._render_styles()
+
+    styles = "\n".join(rendered)
+    assert '[data-testid="stBottom"] > div' in styles
+    assert "max-width: 1040px !important;" in styles
+    assert "width: 100% !important;" in styles
+    assert "color: #AAB3C5 !important;" in styles
+    assert "border: 1px solid #454858 !important;" in styles
+    assert "background: linear-gradient(" not in styles
+
+
 @pytest.mark.parametrize(
     ("error", "expected"),
     [

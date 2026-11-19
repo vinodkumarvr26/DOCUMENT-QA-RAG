@@ -670,7 +670,7 @@ def _render_styles() -> None:
         [data-testid="stChatInput"] {
             color: var(--docuquery-sidebar-text) !important;
             background: var(--docuquery-sidebar) !important;
-            border: 1px solid #444651 !important;
+            border: 1px solid #454858 !important;
             border-radius: 14px !important;
         }
         [data-testid="stChatInput"] > div:first-child {
@@ -686,22 +686,29 @@ def _render_styles() -> None:
         }
         [data-testid="stChatInput"] textarea::placeholder,
         [data-testid="stChatInput"] input::placeholder {
-            color: #C4CAD6 !important;
-            -webkit-text-fill-color: #C4CAD6 !important;
+            color: #AAB3C5 !important;
+            -webkit-text-fill-color: #AAB3C5 !important;
             opacity: 1 !important;
+        }
+        [data-testid="stChatInputSubmitButton"] {
+            color: #FFFFFF !important;
+            background: var(--docuquery-blue) !important;
+            border-color: var(--docuquery-blue) !important;
         }
         [data-testid="stChatInput"] [data-testid="stChatInputSubmitButton"]:disabled {
-            color: #C4CAD6 !important;
+            color: #AAB3C5 !important;
             background: #30313A !important;
-            border-color: #53545F !important;
+            border-color: #454858 !important;
             opacity: 1 !important;
         }
+        [data-testid="stBottom"] > div {
+            background: transparent !important;
+        }
         [data-testid="stBottomBlockContainer"] {
-            background: linear-gradient(
-                to bottom,
-                rgba(247, 249, 255, 0),
-                #F7F9FF 32%
-            ) !important;
+            width: 100% !important;
+            max-width: 1040px !important;
+            box-sizing: border-box;
+            background: transparent !important;
         }
         </style>
         """,
