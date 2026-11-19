@@ -66,6 +66,7 @@ _STATE_DEFAULTS: dict[str, Any] = {
     "indexed_chunk_count": 0,
     "indexed_files": [],
 }
+_INDEX_NOTICE_KEY = "indexing_notice"
 
 
 class UploadValidationError(Exception):
@@ -298,6 +299,13 @@ def index_uploaded_files(
         vector_store = create_store(collection_name)
         add_documents(vector_store, chunks)
         collection_count = count_documents(vector_store)
+        if collection_count <= 0:
+            raise IndexingError(
+                "No document chunks were found in the session collection after "
+                "indexing. Please try indexing the documents again."
+            )
+    except IndexingError:
+        raise
     except (MissingEmbeddingAPIKeyError, EmbeddingAPIUnavailableError,
             EmbeddingAuthenticationError, EmbeddingQuotaError,
             VectorStoreConfigurationError, VectorStoreError) as exc:
@@ -314,6 +322,58 @@ def index_uploaded_files(
         files_indexed=list(indexed_files.values()),
         errors=errors,
     )
+
+
+def refresh_indexed_chunk_count(
+    state: MutableMapping[str, Any],
+    *,
+    store_factory: Callable[[str], Any] | None = None,
+    count_fn: Callable[[Any], int] | None = None,
+) -> int:
+    """Reconcile known indexed state with the actual current session collection."""
+    collection_name = state.get("collection_name")
+    if not isinstance(collection_name, str) or not collection_name:
+        state["indexed_chunk_count"] = 0
+        return 0
+
+    if not state.get("indexed_chunk_count") and not state.get("indexed_files"):
+        return 0
+
+    try:
+        vector_store = (store_factory or create_vector_store)(collection_name)
+        actual_count = (count_fn or get_collection_count)(vector_store)
+    except Exception as exc:
+        state["indexed_chunk_count"] = 0
+        raise IndexingError(
+            "Could not verify this session's indexed documents. Re-index your "
+            "files before asking questions."
+        ) from exc
+
+    state["indexed_chunk_count"] = max(0, actual_count)
+    if actual_count <= 0:
+        state["indexed_files"] = []
+        clear_chat_history(state)
+    return state["indexed_chunk_count"]
+
+
+def record_indexing_result(
+    state: MutableMapping[str, Any],
+    result: IndexResult,
+) -> bool:
+    """Update UI index state only when the collection contains stored chunks."""
+    if result.chunks_indexed <= 0 or result.collection_count <= 0:
+        return False
+    state["indexed_chunk_count"] = result.collection_count
+    state["indexed_files"] = merge_indexed_files(
+        state.get("indexed_files", []),
+        result.files_indexed,
+    )
+    return True
+
+
+def chat_input_is_disabled(indexed_chunk_count: int) -> bool:
+    """Enable chat only when the current session collection has stored chunks."""
+    return indexed_chunk_count <= 0
 
 
 def _safe_indexing_error(error: Exception) -> str:
@@ -489,36 +549,159 @@ def _render_styles() -> None:
         """
         <style>
         :root {
-            --docuquery-ink: #1d2845;
-            --docuquery-muted: #63708b;
-            --docuquery-blue: #5369d9;
-            --docuquery-periwinkle: #eef0ff;
-            --docuquery-border: #e2e7f2;
+            --docuquery-background: #F7F9FF;
+            --docuquery-ink: #253047;
+            --docuquery-heading: #18223A;
+            --docuquery-muted: #53627A;
+            --docuquery-blue: #5669D8;
+            --docuquery-sidebar: #202128;
+            --docuquery-sidebar-text: #F1F3F8;
+            --docuquery-card: #FFFFFF;
+            --docuquery-border: #D7DEEA;
+            --docuquery-disabled: #E5E9F2;
+            --docuquery-disabled-text: #53627A;
         }
-        html, body, [class*="css"] {
+        html, body, [data-testid="stAppViewContainer"],
+        [data-testid="stMain"], [data-testid="stMainBlockContainer"] {
+            background: var(--docuquery-background) !important;
+            color: var(--docuquery-ink) !important;
             font-family: "Nunito", "Segoe UI", sans-serif;
             font-size: 15px;
+        }
+        [data-testid="stMainBlockContainer"] {
+            max-width: 1040px;
+            padding-top: 2rem;
+        }
+        .stMain h1,
+        .stMain h2,
+        .stMain h3,
+        .stMain h4 {
+            color: var(--docuquery-heading) !important;
+            letter-spacing: -0.025em;
+        }
+        h1 { font-size: 2.15rem; }
+        .stMain p,
+        .stMain label,
+        .stMain li,
+        .stMain [data-testid="stMarkdownContainer"],
+        .stMain [data-testid="stCaptionContainer"] {
+            color: var(--docuquery-ink) !important;
+        }
+        .stMain [data-testid="stCaptionContainer"] {
+            color: var(--docuquery-muted) !important;
+        }
+        p, label, li, input, textarea, button { font-size: 15px !important; }
+        .stMain button,
+        .stMain [role="button"] {
             color: var(--docuquery-ink);
         }
-        .stApp { background: #f8faff; }
-        .block-container { max-width: 1040px; padding-top: 2rem; }
-        h1, h2, h3 { letter-spacing: -0.025em; color: var(--docuquery-ink); }
-        h1 { font-size: 2.15rem; }
-        p, label, li, input, textarea, button { font-size: 15px !important; }
-        [data-testid="stChatMessage"] {
-            border: 1px solid var(--docuquery-border);
-            border-radius: 14px;
-            background: #fff;
+        .stMain button[kind="primary"],
+        .stMain div.stButton > button[kind="primary"] {
+            color: #FFFFFF !important;
+            background: var(--docuquery-blue) !important;
+            border-color: var(--docuquery-blue) !important;
         }
+        .stMain button:disabled,
+        .stMain button[disabled],
+        .stMain div.stButton > button[kind="primary"]:disabled {
+            color: var(--docuquery-disabled-text) !important;
+            background: var(--docuquery-disabled) !important;
+            border-color: var(--docuquery-border) !important;
+            opacity: 1 !important;
+        }
+        [data-testid="stFileUploaderDropzone"],
         [data-testid="stFileUploader"] section {
-            border: 1px dashed #aeb9ee;
-            border-radius: 14px;
-            background: #fff;
+            color: var(--docuquery-ink) !important;
+            background: var(--docuquery-card) !important;
+            border-color: #9AA8C0 !important;
         }
-        .docuquery-caption { color: var(--docuquery-muted); }
-        div.stButton > button[kind="primary"] {
-            background: var(--docuquery-blue);
-            border-color: var(--docuquery-blue);
+        [data-testid="stFileUploader"] small,
+        [data-testid="stFileUploader"] span,
+        [data-testid="stFileUploader"] button {
+            color: var(--docuquery-ink) !important;
+        }
+        [data-testid="stAlert"] {
+            color: var(--docuquery-ink) !important;
+            background: var(--docuquery-card) !important;
+            border: 1px solid var(--docuquery-border) !important;
+        }
+        [data-testid="stAlert"] p,
+        [data-testid="stAlert"] [data-testid="stMarkdownContainer"] {
+            color: var(--docuquery-ink) !important;
+        }
+        [data-testid="stChatMessage"] {
+            color: var(--docuquery-ink) !important;
+            border: 1px solid var(--docuquery-border) !important;
+            border-radius: 14px;
+            background: var(--docuquery-card) !important;
+        }
+        [data-testid="stChatMessage"] p,
+        [data-testid="stChatMessage"] [data-testid="stMarkdownContainer"] {
+            color: var(--docuquery-ink) !important;
+        }
+        [data-testid="stExpander"] {
+            color: var(--docuquery-ink) !important;
+            background: var(--docuquery-card) !important;
+            border-color: var(--docuquery-border) !important;
+        }
+        [data-testid="stSidebar"] {
+            color: var(--docuquery-sidebar-text) !important;
+            background: var(--docuquery-sidebar) !important;
+        }
+        [data-testid="stSidebar"] *,
+        [data-testid="stSidebar"] p,
+        [data-testid="stSidebar"] label,
+        [data-testid="stSidebar"] [data-testid="stMarkdownContainer"],
+        [data-testid="stSidebar"] [data-testid="stCaptionContainer"],
+        [data-testid="stSidebar"] [data-testid="stMetricLabel"],
+        [data-testid="stSidebar"] [data-testid="stMetricValue"] {
+            color: var(--docuquery-sidebar-text) !important;
+        }
+        [data-testid="stSidebar"] button {
+            color: var(--docuquery-sidebar-text) !important;
+            background: #30313A !important;
+            border-color: #53545F !important;
+        }
+        [data-testid="stSidebar"] button:disabled {
+            color: #B5BAC6 !important;
+            background: #30313A !important;
+            opacity: 1 !important;
+        }
+        [data-testid="stChatInput"] {
+            color: var(--docuquery-sidebar-text) !important;
+            background: var(--docuquery-sidebar) !important;
+            border: 1px solid #444651 !important;
+            border-radius: 14px !important;
+        }
+        [data-testid="stChatInput"] > div:first-child {
+            background: var(--docuquery-sidebar) !important;
+            border-radius: 14px !important;
+        }
+        [data-testid="stChatInput"] textarea,
+        [data-testid="stChatInput"] input {
+            color: var(--docuquery-sidebar-text) !important;
+            -webkit-text-fill-color: var(--docuquery-sidebar-text) !important;
+            background: transparent !important;
+            caret-color: var(--docuquery-sidebar-text) !important;
+        }
+        [data-testid="stChatInput"] textarea::placeholder,
+        [data-testid="stChatInput"] input::placeholder {
+            color: #C4CAD6 !important;
+            -webkit-text-fill-color: #C4CAD6 !important;
+            opacity: 1 !important;
+        }
+        [data-testid="stChatInput"] [data-testid="stChatInputSubmitButton"]:disabled {
+            color: #C4CAD6 !important;
+            background: #30313A !important;
+            border-color: #53545F !important;
+            opacity: 1 !important;
+        }
+        [data-testid="stBottomBlockContainer"] {
+            background: linear-gradient(
+                to bottom,
+                rgba(247, 249, 255, 0),
+                #F7F9FF 32%
+            ) !important;
         }
         </style>
         """,
@@ -552,18 +735,33 @@ def main() -> None:
     )
     initialize_session_state(st.session_state)
     _render_styles()
+    try:
+        indexed_chunk_count = refresh_indexed_chunk_count(st.session_state)
+    except IndexingError as exc:
+        indexed_chunk_count = 0
+        st.error(safe_error_message(exc))
+    notice = st.session_state.pop(_INDEX_NOTICE_KEY, None)
+    if isinstance(notice, dict):
+        success_notice = notice.get("success")
+        if isinstance(success_notice, str) and success_notice:
+            st.success(success_notice)
+        errors = notice.get("errors", [])
+        if isinstance(errors, list):
+            for message in errors:
+                if isinstance(message, str):
+                    st.warning(message)
 
     with st.sidebar:
         st.markdown("### Your workspace")
         st.caption("Documents and chat are isolated to this browser session.")
         st.caption(f"Session: {st.session_state.session_id[:8]}")
-        st.metric("Indexed chunks", st.session_state.indexed_chunk_count)
+        st.metric("Indexed chunks", indexed_chunk_count)
         if st.button("Clear chat history", use_container_width=True):
             clear_chat_history(st.session_state)
             st.rerun()
         if st.button(
             "Clear indexed documents",
-            disabled=st.session_state.indexed_chunk_count == 0,
+            disabled=indexed_chunk_count == 0,
             use_container_width=True,
         ):
             try:
@@ -571,7 +769,12 @@ def main() -> None:
                 st.session_state.indexed_chunk_count = 0
                 st.session_state.indexed_files = []
                 clear_chat_history(st.session_state)
-                st.success("This session's indexed documents were cleared.")
+                indexed_chunk_count = 0
+                st.session_state[_INDEX_NOTICE_KEY] = {
+                    "success": "This session's indexed documents were cleared.",
+                    "errors": [],
+                }
+                st.rerun()
             except Exception as exc:
                 st.error(safe_error_message(exc))
         if st.button("Reset session", use_container_width=True):
@@ -625,19 +828,31 @@ def main() -> None:
                 ),
             )
             if result.chunks_indexed:
-                st.session_state.indexed_chunk_count = result.collection_count
-                st.session_state.indexed_files = merge_indexed_files(
-                    st.session_state.indexed_files,
-                    result.files_indexed,
-                )
-                status.update(
-                    label=f"Indexed {result.chunks_indexed} chunks successfully.",
-                    state="complete",
-                )
-                st.success(
-                    f"Indexed {result.chunks_indexed} chunks from "
-                    f"{len(result.files_indexed)} file(s)."
-                )
+                if record_indexing_result(st.session_state, result):
+                    indexed_chunk_count = result.collection_count
+                    status.update(
+                        label=f"Indexed {result.chunks_indexed} chunks successfully.",
+                        state="complete",
+                    )
+                    st.success(
+                        f"Indexed {result.chunks_indexed} chunks from "
+                        f"{len(result.files_indexed)} file(s)."
+                    )
+                    st.session_state[_INDEX_NOTICE_KEY] = {
+                        "success": (
+                            f"Indexed {result.chunks_indexed} chunks from "
+                            f"{len(result.files_indexed)} file(s)."
+                        ),
+                        "errors": [
+                            error["message"] for error in result.errors
+                        ],
+                    }
+                    st.rerun()
+                else:
+                    indexed_chunk_count = refresh_indexed_chunk_count(
+                        st.session_state
+                    )
+                    status.update(label="No documents were indexed.", state="error")
             else:
                 status.update(label="No documents were indexed.", state="error")
             for error in result.errors:
@@ -665,8 +880,11 @@ def main() -> None:
 
     st.divider()
     st.subheader("2. Ask your documents")
-    if not st.session_state.indexed_chunk_count:
-        st.info("Index at least one document to enable questions.")
+    if indexed_chunk_count == 0:
+        st.info(
+            "Upload one or more PDF or TXT documents, then select **Index "
+            "documents** to enable questions."
+        )
 
     for turn in st.session_state.chat_history:
         with st.chat_message("user"):
@@ -683,7 +901,7 @@ def main() -> None:
 
     question = st.chat_input(
         "Ask a question about your indexed documents…",
-        disabled=not st.session_state.indexed_chunk_count,
+        disabled=chat_input_is_disabled(indexed_chunk_count),
     )
     if question:
         with st.spinner("Searching your documents…"):

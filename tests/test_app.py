@@ -271,6 +271,107 @@ def test_indexing_without_files_does_not_create_vector_store(
     assert result.errors
 
 
+def test_indexing_rejects_empty_collection_after_chunk_creation(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(app.IndexingError, match="No document chunks were found"):
+        app.index_uploaded_files(
+            [FakeUploadedFile("synthetic.txt", b"synthetic upload")],
+            "docuquery_empty_result",
+            tmp_path,
+            loader_fn=lambda _path: [Document(page_content="Synthetic content.")],
+            splitter_fn=lambda documents: list(documents),
+            store_factory=lambda _name: object(),
+            add_fn=lambda _store, _documents: ["synthetic-id"],
+            count_fn=lambda _store: 0,
+        )
+
+
+def test_refresh_indexed_chunk_count_recovers_actual_collection_state() -> None:
+    state: dict[str, Any] = {
+        "collection_name": "docuquery_session",
+        "indexed_chunk_count": 0,
+        "indexed_files": [{"source": "synthetic.txt", "document_id": "doc-1"}],
+    }
+    store = object()
+
+    count = app.refresh_indexed_chunk_count(
+        state,
+        store_factory=lambda collection_name: (
+            store if collection_name == "docuquery_session" else None
+        ),
+        count_fn=lambda candidate: 3 if candidate is store else 0,
+    )
+
+    assert count == 3
+    assert state["indexed_chunk_count"] == 3
+
+
+def test_refresh_empty_collection_clears_stale_index_and_chat() -> None:
+    state: dict[str, Any] = {
+        "collection_name": "docuquery_session",
+        "indexed_chunk_count": 4,
+        "indexed_files": [{"source": "synthetic.txt", "document_id": "doc-1"}],
+        "chat_history": [{"question": "Old?", "answer": "Old.", "sources": []}],
+    }
+
+    count = app.refresh_indexed_chunk_count(
+        state,
+        store_factory=lambda _name: object(),
+        count_fn=lambda _store: 0,
+    )
+
+    assert count == 0
+    assert state["indexed_chunk_count"] == 0
+    assert state["indexed_files"] == []
+    assert state["chat_history"] == []
+
+
+def test_fresh_unindexed_state_does_not_open_a_vector_collection() -> None:
+    state: dict[str, Any] = {
+        "collection_name": "docuquery_session",
+        "indexed_chunk_count": 0,
+        "indexed_files": [],
+    }
+
+    def unexpected_store(_name: str) -> Any:
+        raise AssertionError("fresh unindexed session must not open a collection")
+
+    assert app.refresh_indexed_chunk_count(
+        state,
+        store_factory=unexpected_store,
+    ) == 0
+
+
+def test_recording_success_enables_chat_from_actual_collection_count() -> None:
+    state: dict[str, Any] = {"indexed_chunk_count": 0, "indexed_files": []}
+    result = app.IndexResult(
+        chunks_indexed=2,
+        collection_count=2,
+        files_indexed=[
+            {"source": "synthetic.txt", "document_id": "doc-1"},
+        ],
+        errors=[],
+    )
+
+    assert app.record_indexing_result(state, result)
+    assert state["indexed_chunk_count"] == 2
+    assert not app.chat_input_is_disabled(state["indexed_chunk_count"])
+
+
+def test_zero_count_keeps_chat_disabled_after_failed_indexing() -> None:
+    state: dict[str, Any] = {"indexed_chunk_count": 0, "indexed_files": []}
+    result = app.IndexResult(
+        chunks_indexed=1,
+        collection_count=0,
+        files_indexed=[{"source": "synthetic.txt", "document_id": "doc-1"}],
+        errors=[],
+    )
+
+    assert not app.record_indexing_result(state, result)
+    assert app.chat_input_is_disabled(state["indexed_chunk_count"])
+
+
 def test_chat_history_append_and_clear() -> None:
     state: dict[str, Any] = {"chat_history": []}
     sources = [{"source_id": "S1", "source": "synthetic.txt"}]
